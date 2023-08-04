@@ -3,7 +3,7 @@ use cosmwasm_std::entry_point;
 use cosmwasm_std::{to_binary, from_binary, Addr, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, Uint128, CosmosMsg, WasmMsg, Order, BlockInfo};
 
 use cw2::set_contract_version;
-use cw20::{Denom};
+use cw20::Denom;
 use cw721::{Cw721ReceiveMsg, Cw721ExecuteMsg};
 use cw_utils::must_pay;
 
@@ -23,7 +23,8 @@ use crate::msg::{
 use crate::state::{
     Config, 
     CONFIG,
-    LAST_AIRDROP,
+    CURRENT_AIRDROP,
+    START_AIRDROP,
     TOTAL_AIRDROP,
     TOTAL_STAKED,
     LOCKTIME_FEE,
@@ -55,7 +56,8 @@ pub fn instantiate(
     };
 
     CONFIG.save(deps.storage, &config)?;
-    LAST_AIRDROP.save(deps.storage, &env.block.clone())?;
+    CURRENT_AIRDROP.save(deps.storage, &env.block.clone())?;
+    START_AIRDROP.save(deps.storage, &false)?;
     LOCKTIME_FEE.save(deps.storage, &Uint128::from(1000000000000000000u128))?;
     TOTAL_AIRDROP.save(deps.storage, &Uint128::zero())?;
     TOTAL_STAKED.save(deps.storage, &0u64)?;
@@ -213,7 +215,7 @@ pub fn execute_airdrop(
         return Err(crate::ContractError::InsufficientCw20 {  });
     }
 
-    let nft_count = util::get_in_locktime_nft_count(deps.storage, env.block.clone())?;
+    let nft_count = util::get_in_locktime_nft_count(deps.storage, env.block.clone(), cfg.collection_address.clone())?;
 
     if nft_count.is_zero() {
         return Err(crate::ContractError::NoUnexpiredNft {  });
@@ -243,7 +245,15 @@ pub fn execute_airdrop(
                 ACCOUNT_MAP.save(deps.storage, _address.clone(), &userinfo)?;
             }
 
-            util::update_airdrop_info(deps.storage, env.clone(), info.sender.clone(), airdrop_amount)?;
+            TOTAL_AIRDROP.update(deps.storage, |mut exists| -> StdResult<_> {
+                exists += airdrop_amount;
+                Ok(exists)
+            })?;
+        
+            START_AIRDROP.update(deps.storage, | _| -> StdResult<_> {
+                Ok(false)
+            })?;
+            
         },
         Err(_error) => {
             return Err(crate::ContractError::NoAirdropNft {  });
@@ -263,9 +273,11 @@ pub fn execute_airdrop_restart(
 ) -> Result<Response, ContractError> { 
     util::check_owner(deps.storage, info.sender.clone())?;
 
-    LAST_AIRDROP.update(deps.storage, | _exists| -> StdResult<_> {
+    CURRENT_AIRDROP.update(deps.storage, | _exists| -> StdResult<_> {
         Ok(env.block.clone())
     })?;
+
+    START_AIRDROP.update(deps.storage, |_| -> StdResult<_> {Ok(true)})?;
 
     Ok(Response::new()
         .add_attribute("action", "execute_airdrop_restart")
@@ -279,6 +291,7 @@ pub fn execute_receive_nft(
     wrapper: Cw721ReceiveMsg
 ) -> Result<Response, ContractError> {
     util::check_enabled(deps.storage)?;
+    util::check_airdrop_start(deps.storage)?;
 
     let cfg = CONFIG.load(deps.storage)?;
 
@@ -305,6 +318,7 @@ pub fn execute_receive_nft(
                 nft_id: stake_nft_id.clone(),
                 lock_time: duration+env.block.time.seconds(),
                 airdrop: Uint128::zero(),
+                collection_address: cfg.collection_address.clone()
             };
             
             let mut _userinfo = UserInfo {
@@ -338,6 +352,7 @@ pub fn execute_restake(
     restake_nft_id: String
 ) -> Result<Response, ContractError> {
     util::check_enabled(deps.storage)?;
+    util::check_airdrop_start(deps.storage)?;
 
     let cfg = CONFIG.load(deps.storage)?;
     let mut userinfo = ACCOUNT_MAP.load(deps.storage, info.sender.clone())?;
@@ -351,6 +366,11 @@ pub fn execute_restake(
     match index {
         Some(index) => {
             let mut nftinfo = userinfo.staked_nfts[index].clone();
+
+            if nftinfo.collection_address != cfg.collection_address {
+                return Err(ContractError::InvalidCw721Msg {  });
+            }
+
             if nftinfo.lock_time > env.block.time.seconds() {
                 return Err(ContractError::Locktime {  });
             }
@@ -491,7 +511,8 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
 
 pub fn query_config(deps: Deps, env: Env) -> StdResult<ConfigResponse> {
     let config: Config = CONFIG.load(deps.storage)?;
-    let last_airdrop: BlockInfo = LAST_AIRDROP.load(deps.storage)?;
+    let current_airdrop: BlockInfo = CURRENT_AIRDROP.load(deps.storage)?;
+    let start_airdrop: bool = START_AIRDROP.load(deps.storage)?;
     let total_airdrop: Uint128 = TOTAL_AIRDROP.load(deps.storage)?;
     let total_staked: u64 = TOTAL_STAKED.load(deps.storage)?;
     let locktime_fee: Uint128 = LOCKTIME_FEE.load(deps.storage)?;
@@ -502,7 +523,8 @@ pub fn query_config(deps: Deps, env: Env) -> StdResult<ConfigResponse> {
         duration: config.duration,
         enabled: config.enabled,
         current_time: env.block.time.seconds(),
-        last_airdrop_time: last_airdrop.time.seconds(),
+        current_airdrop_time: current_airdrop.time.seconds(),
+        start_airdrop: start_airdrop.clone(),
         total_airdrop: total_airdrop.clone(),
         total_staked: total_staked.clone(),
         locktime_fee: locktime_fee.clone()
@@ -527,7 +549,8 @@ pub fn query_total_earned(deps: Deps, address: Addr) -> StdResult<TotalEarnedRes
 }
 
 pub fn query_total_locked(deps: Deps, env: Env) -> StdResult<TotalLockedResponse> {
-    let nft_count = util::get_in_locktime_nft_count(deps.storage, env.block.clone());
+    let config: Config = CONFIG.load(deps.storage)?;
+    let nft_count = util::get_in_locktime_nft_count(deps.storage, env.block.clone(), config.collection_address.clone());
     match nft_count {
         Ok(nft_count) => {
             Ok(TotalLockedResponse {

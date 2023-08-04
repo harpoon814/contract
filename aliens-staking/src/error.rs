@@ -12,6 +12,9 @@ pub enum ContractError {
     #[error("Disabled")]
     Disabled {},
 
+    #[error("Airdrop Not Started")]
+    NotStarted {},
+
     #[error("InvalidCw721Token")]
     InvalidCw721Token {},
 

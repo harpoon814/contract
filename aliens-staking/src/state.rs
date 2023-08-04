@@ -6,10 +6,10 @@ use cw_storage_plus::{Item, Map};
 pub struct Config {
     pub owner: Addr,
     pub fee_address: Addr,
-    pub collection_address: Addr,
     pub native_token: String,
-    pub duration: u64,
     pub enabled: bool,
+    pub collection_address: Addr,
+    pub duration: u64,
 }
 
 #[cw_serde]
@@ -17,6 +17,7 @@ pub struct  NftInfo {
     pub nft_id: String,
     pub lock_time: u64,
     pub airdrop: Uint128,
+    pub collection_address: Addr,
 }
 
 #[cw_serde]
@@ -29,8 +30,11 @@ pub struct UserInfo {
 pub const CONFIG_KEY: &str = "config";
 pub const CONFIG: Item<Config> = Item::new(CONFIG_KEY);
 
-pub const LAST_AIRDROP_KEY: &str = "last_airdrop";
-pub const LAST_AIRDROP: Item<BlockInfo> = Item::new(LAST_AIRDROP_KEY);
+pub const CURRENT_AIRDROP_KEY: &str = "current_airdrop";
+pub const CURRENT_AIRDROP: Item<BlockInfo> = Item::new(CURRENT_AIRDROP_KEY);
+
+pub const START_AIRDROP_KEY: &str = "start_airdrop";
+pub const START_AIRDROP: Item<bool> = Item::new(START_AIRDROP_KEY);
 
 pub const TOTAL_AIRDROP_KEY: &str = "total_airdrop";
 pub const TOTAL_AIRDROP: Item<Uint128> = Item::new(TOTAL_AIRDROP_KEY);

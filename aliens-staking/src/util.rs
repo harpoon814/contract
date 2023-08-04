@@ -1,17 +1,16 @@
 use std::convert::{From, TryFrom};
 use cosmwasm_std::{
     to_binary,  Response, StdResult, Uint128, Coin, BankMsg,
-    WasmMsg, WasmQuery, QueryRequest, Addr, Storage, CosmosMsg,  QuerierWrapper, BalanceResponse as NativeBalanceResponse, BankQuery, Order, BlockInfo, Env
+    WasmMsg, WasmQuery, QueryRequest, Addr, Storage, CosmosMsg,  QuerierWrapper, BalanceResponse as NativeBalanceResponse, BankQuery, Order, BlockInfo
 };
 use cw20::{Cw20ExecuteMsg, Denom, BalanceResponse as CW20BalanceResponse, Cw20QueryMsg};
 use crate::error::ContractError;
 use crate::state::{
     CONFIG,
     ACCOUNT_MAP, 
-    UserInfo, 
-    TOTAL_AIRDROP, 
-    LAST_AIRDROP, 
-    LOCKTIME_FEE
+    LOCKTIME_FEE, 
+    START_AIRDROP,
+    UserInfo,
 };
 
 pub fn check_enabled(
@@ -19,9 +18,19 @@ pub fn check_enabled(
 ) -> Result<Response, ContractError> {
     let cfg = CONFIG.load(storage)?;
     if !cfg.enabled {
-        return Err(ContractError::Disabled {})
+        return Err(ContractError::Disabled {  })
     }
     Ok(Response::new().add_attribute("action", "check_enabled"))
+}
+
+pub fn check_airdrop_start(
+    storage: &mut dyn Storage,
+) -> Result<Response, ContractError> {
+    let start = START_AIRDROP.load(storage)?;
+    if !start {
+        return Err(ContractError::NotStarted {  })
+    }
+    Ok(Response::new().add_attribute("action", "check_airdrop_start"))
 }
 
 pub fn check_owner(
@@ -89,26 +98,6 @@ pub fn execute_update_enabled (
     Ok(Response::new()
         .add_attribute("action", "update_enabled")
     )
-}
-
-pub fn update_airdrop_info (
-    storage: &mut dyn Storage,
-    env: Env,
-    address: Addr,
-    amount_airdrop: Uint128
-) -> Result<Response, ContractError> {
-    check_owner(storage, address)?;
-    
-    TOTAL_AIRDROP.update(storage, |mut exists| -> StdResult<_> {
-        exists += amount_airdrop;
-        Ok(exists)
-    })?;
-
-    LAST_AIRDROP.update(storage, | _exists| -> StdResult<_> {
-        Ok(env.block.clone())
-    })?;
-    
-    Ok(Response::new().add_attribute("action", "update_total_airdrop"))
 }
 
 pub fn execute_update_config(
@@ -207,7 +196,8 @@ pub fn get_token_amount(
 
 pub fn get_in_locktime_nft_count(
     storage: &dyn Storage,
-    block: BlockInfo
+    block: BlockInfo,
+    collection_address: Addr,
 ) -> Result<Uint128, ContractError> {
     let mut count = 0;
     let result: StdResult<Vec<(Addr, UserInfo)>> = ACCOUNT_MAP.range(storage, None, None, Order::Ascending).collect();
@@ -218,7 +208,7 @@ pub fn get_in_locktime_nft_count(
                 count += userinfo.staked_nfts
                     .iter()
                     .filter(|nftinfo| 
-                        (nftinfo.lock_time > block.time.seconds())
+                        (nftinfo.lock_time > block.time.seconds() && nftinfo.collection_address == collection_address)
                     ).count();
             }
     
